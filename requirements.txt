@@ -3,5 +3,5 @@ Pillow==10.4.0
 Werkzeug==3.0.1
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
-rembg==2.0.50
+rembg==2.0.68
 gunicorn==21.2.0
