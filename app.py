@@ -1,4 +1,4 @@
-# app.py — Enhanced single-file Flask app with improved background removal and color replacement
+# app.py – Enhanced single-file Flask app with improved background removal and color replacement
 import os, io, tempfile, uuid, traceback
 from flask import Flask, render_template_string, request, send_file, jsonify
 from werkzeug.utils import secure_filename
@@ -16,8 +16,9 @@ except Exception:
 try:
     from rembg import remove
     REMBG_AVAILABLE = True
-except Exception:
+except Exception as e:
     REMBG_AVAILABLE = False
+    print(f"⚠️ rembg not available: {e}")
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024  # 25 MB max upload
@@ -891,7 +892,7 @@ async function handleBGRemove(e){
   const formData = new FormData(form);
   const resultDiv = document.getElementById('bg-result');
   
-  resultDiv.innerHTML = '<div class="loader"></div><p class="text-center mt-2 text-gray-600">Processing background... This may take a moment.</p>';
+  resultDiv.innerHTML = '<div class="loader"></div><p class="text-center mt-2 text-gray-600">Processing background... This may take 30-60 seconds.</p>';
   
   try{
     const response = await fetch('/bg_remove', {method: 'POST', body: formData});
@@ -1071,45 +1072,52 @@ def to_pdf():
         traceback.print_exc()
         return f"Processing error: {str(e)}", 500
 
-# ---------- Background removal with color replacement ----------
+# ---------- IMPROVED Background removal - Works on Web ----------
 def remove_background_with_color(image_bytes, bg_color='transparent'):
-    """Advanced background removal with color replacement"""
+    """Smart background removal that works on web servers"""
     try:
         img = Image.open(io.BytesIO(image_bytes))
         img = ImageOps.exif_transpose(img)
         
-        # Try using rembg if available (best quality)
+        # Try rembg first (if available and model is downloaded)
         if REMBG_AVAILABLE:
-            img_no_bg = remove(img)
-            
-            if bg_color == 'transparent':
+            try:
+                print("🤖 Attempting AI background removal with rembg...")
+                img_no_bg = remove(img, timeout=30)  # 30 second timeout
+                
+                if bg_color == 'transparent':
+                    out = io.BytesIO()
+                    img_no_bg.save(out, format='PNG')
+                    return out.getvalue()
+                
+                if img_no_bg.mode != 'RGBA':
+                    img_no_bg = img_no_bg.convert('RGBA')
+                
+                rgb = hex_to_rgb(bg_color)
+                bg_image = Image.new('RGB', img_no_bg.size, rgb)
+                bg_image.paste(img_no_bg, (0, 0), img_no_bg)
+                
                 out = io.BytesIO()
-                img_no_bg.save(out, format='PNG')
+                bg_image.save(out, format='JPEG', quality=95)
                 return out.getvalue()
-            
-            if img_no_bg.mode != 'RGBA':
-                img_no_bg = img_no_bg.convert('RGBA')
-            
-            rgb = hex_to_rgb(bg_color)
-            bg_image = Image.new('RGB', img_no_bg.size, rgb)
-            bg_image.paste(img_no_bg, (0, 0), img_no_bg)
-            
-            out = io.BytesIO()
-            bg_image.save(out, format='JPEG', quality=95)
-            return out.getvalue()
+            except Exception as e:
+                print(f"⚠️ rembg failed, falling back to OpenCV: {e}")
         
-        elif OPENCV_AVAILABLE:
+        # Fallback to OpenCV if available
+        if OPENCV_AVAILABLE:
+            print("🔄 Using OpenCV for background removal...")
             return remove_background_opencv_improved(image_bytes, bg_color)
         
-        else:
-            return remove_background_simple(image_bytes, bg_color)
+        # Final fallback to simple method
+        print("⚠️ Using simple background removal...")
+        return remove_background_simple(image_bytes, bg_color)
             
     except Exception as e:
         traceback.print_exc()
         raise RuntimeError(f"Background removal failed: {str(e)}")
 
 def remove_background_opencv_improved(image_bytes, bg_color='transparent'):
-    """Improved OpenCV background removal"""
+    """Improved OpenCV background removal with better edge detection"""
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
@@ -1118,17 +1126,26 @@ def remove_background_opencv_improved(image_bytes, bg_color='transparent'):
     mask = np.zeros(img.shape[:2], np.uint8)
     h, w = img.shape[:2]
     
-    margin_h = max(5, int(h * 0.02))
-    margin_w = max(5, int(w * 0.02))
+    # Better margin calculation
+    margin_h = max(10, int(h * 0.05))
+    margin_w = max(10, int(w * 0.05))
     rect = (margin_w, margin_h, w - 2*margin_w, h - 2*margin_h)
     
     bgd_model = np.zeros((1, 65), np.float64)
     fgd_model = np.zeros((1, 65), np.float64)
     
     try:
-        cv2.grabCut(img, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+        # Run GrabCut algorithm with more iterations for better results
+        cv2.grabCut(img, mask, rect, bgd_model, fgd_model, 7, cv2.GC_INIT_WITH_RECT)
         mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
-    except:
+        
+        # Apply morphological operations to clean up the mask
+        kernel = np.ones((3,3), np.uint8)
+        mask2 = cv2.morphologyEx(mask2, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask2 = cv2.morphologyEx(mask2, cv2.MORPH_OPEN, kernel, iterations=1)
+        
+    except Exception as e:
+        print(f"GrabCut failed: {e}, using fallback mask")
         mask2 = np.ones(img.shape[:2], dtype='uint8')
     
     if bg_color == 'transparent':
@@ -1149,35 +1166,46 @@ def remove_background_opencv_improved(image_bytes, bg_color='transparent'):
     return out.getvalue()
 
 def remove_background_simple(image_bytes, bg_color='transparent'):
-    """Simple threshold-based background removal"""
+    """Enhanced simple background removal with better edge detection"""
     img = Image.open(io.BytesIO(image_bytes))
     img = ImageOps.exif_transpose(img)
     img = img.convert('RGBA')
     
-    data = img.getdata()
-    new_data = []
+    data = np.array(img)
     
-    for px in data:
-        r, g, b, a = px
-        brightness = (r + g + b) / 3
-        if brightness > 230:
-            if bg_color == 'transparent':
-                new_data.append((255, 255, 255, 0))
-            else:
-                rgb = hex_to_rgb(bg_color)
-                new_data.append(rgb + (255,))
-        else:
-            new_data.append((r, g, b, a))
+    # Get the most common colors in corners (likely background)
+    h, w = data.shape[:2]
+    corner_size = min(50, h//10, w//10)
     
-    img.putdata(new_data)
+    corners = [
+        data[0:corner_size, 0:corner_size],  # top-left
+        data[0:corner_size, -corner_size:],  # top-right
+        data[-corner_size:, 0:corner_size],  # bottom-left
+        data[-corner_size:, -corner_size:]   # bottom-right
+    ]
     
-    if bg_color != 'transparent':
-        rgb_img = Image.new('RGB', img.size, hex_to_rgb(bg_color))
-        rgb_img.paste(img, mask=img.split()[3])
-        img = rgb_img
+    # Calculate average corner color
+    corner_colors = np.concatenate([c.reshape(-1, 4) for c in corners])
+    avg_bg_color = np.median(corner_colors, axis=0)[:3]
+    
+    # Create mask based on color similarity to background
+    color_diff = np.sqrt(np.sum((data[:,:,:3] - avg_bg_color)**2, axis=2))
+    threshold = 60  # Adjustable threshold
+    
+    mask = color_diff > threshold
+    
+    if bg_color == 'transparent':
+        data[:,:,3] = (mask * 255).astype(np.uint8)
+        pil_img = Image.fromarray(data)
+    else:
+        rgb = hex_to_rgb(bg_color)
+        result = np.zeros_like(data[:,:,:3])
+        for i in range(3):
+            result[:,:,i] = np.where(mask, data[:,:,i], rgb[i])
+        pil_img = Image.fromarray(result.astype(np.uint8))
     
     out = io.BytesIO()
-    img.save(out, format='PNG' if bg_color == 'transparent' else 'JPEG', quality=95)
+    pil_img.save(out, format='PNG' if bg_color == 'transparent' else 'JPEG', quality=95)
     return out.getvalue()
 
 @app.route('/bg_remove', methods=['POST'])
@@ -1195,6 +1223,8 @@ def bg_remove():
         f.stream.seek(0)
         data = f.read()
         
+        print(f"🎨 Processing background removal - Color: {bg_color}, rembg: {REMBG_AVAILABLE}, opencv: {OPENCV_AVAILABLE}")
+        
         processed = remove_background_with_color(data, bg_color)
         
         tmp = save_temp_bytes(processed, suffix='.png' if bg_color == 'transparent' else '.jpg')
@@ -1205,8 +1235,10 @@ def bg_remove():
     except Exception as e:
         traceback.print_exc()
         error_msg = str(e)
-        if 'rembg' in error_msg.lower():
-            error_msg = "AI background removal not available. Please install rembg: pip install rembg"
+        if 'timeout' in error_msg.lower():
+            error_msg = "Background removal timed out. Please try a smaller image or try again."
+        elif 'memory' in error_msg.lower():
+            error_msg = "Image too large. Please use an image smaller than 5MB."
         return f"Processing error: {error_msg}", 500
 
 # ---------- Run ----------
@@ -1222,4 +1254,4 @@ if __name__ == '__main__':
         print("💡 Tip: Install rembg for best background removal:")
         print("   pip install rembg")
     print("="*60 + "\n")
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)
