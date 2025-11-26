@@ -61,6 +61,13 @@ HTML = """<!doctype html>
 .preset-btn:hover{border-color:#667eea;background:#f0f4ff}
 .preset-btn.active{border-color:#667eea;background:#667eea;color:white}
 canvas{max-width:100%;height:auto;border-radius:0.5rem}
+.crop-area{position:absolute;border:2px dashed #667eea;background:rgba(102,126,234,0.1);cursor:move;}
+.crop-handle{position:absolute;width:10px;height:10px;background:#667eea;border-radius:50%;}
+.crop-handle.nw{top:-5px;left:-5px;cursor:nw-resize;}
+.crop-handle.ne{top:-5px;right:-5px;cursor:ne-resize;}
+.crop-handle.sw{bottom:-5px;left:-5px;cursor:sw-resize;}
+.crop-handle.se{bottom:-5px;right:-5px;cursor:se-resize;}
+.crop-container{position:relative;display:inline-block;margin:0 auto;}
 </style>
 </head>
 <body class="bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 min-h-screen p-4">
@@ -172,7 +179,27 @@ canvas{max-width:100%;height:auto;border-radius:0.5rem}
 <button type="button" class="preset-btn" onclick="setCropRatio('9:16')">9:16</button>
 <button type="button" class="preset-btn" onclick="setCropRatio('free')">Free</button>
 </div>
-<div class="text-center mb-4"><canvas id="crop-canvas" class="mx-auto"></canvas></div>
+<div class="text-center mb-4">
+<div class="crop-container">
+<img id="crop-image" style="max-width:100%;max-height:500px;">
+<div id="crop-area" class="crop-area" style="display:none;">
+<div class="crop-handle nw"></div>
+<div class="crop-handle ne"></div>
+<div class="crop-handle sw"></div>
+<div class="crop-handle se"></div>
+</div>
+</div>
+</div>
+<div class="comparison-container mb-4">
+<div class="comparison-item">
+<h3 class="font-bold mb-2">Original</h3>
+<div id="original-preview"></div>
+</div>
+<div class="comparison-item">
+<h3 class="font-bold mb-2">Cropped</h3>
+<div id="cropped-preview"></div>
+</div>
+</div>
 <div class="flex gap-2">
 <button onclick="resetCrop()" class="flex-1 bg-gray-500 text-white px-6 py-3 rounded-lg"><i class="fas fa-undo mr-2"></i>Reset</button>
 <button onclick="downloadCrop()" class="flex-1 btn-primary text-white px-6 py-3 rounded-lg"><i class="fas fa-download mr-2"></i>Download</button>
@@ -288,9 +315,10 @@ canvas{max-width:100%;height:auto;border-radius:0.5rem}
 
 <script>
 let pdfImages=[],sortable=null;
-let cropCanvas,cropCtx,cropImg,cropRatio='1:1';
+let cropImg,cropRatio='1:1',cropArea={x:0,y:0,width:0,height:0};
 let rotateCanvas,rotateCtx,rotateImg,rotation=0,flippedH=false,flippedV=false;
 let filterCanvas,filterCtx,filterImg,currentFilter='none';
+let isDragging=false,isResizing=false,resizeHandle=null,startX=0,startY=0;
 
 function showTab(id){
 document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
@@ -332,20 +360,17 @@ document.getElementById('target-slider').value=kb;
 document.getElementById('target-val').textContent=kb;
 }
 
-// Crop
+// Crop - Fixed Implementation
 function loadCrop(input){
 if(input.files&&input.files[0]){
 const reader=new FileReader();
 reader.onload=function(e){
 cropImg=new Image();
 cropImg.onload=function(){
-cropCanvas=document.getElementById('crop-canvas');
-cropCtx=cropCanvas.getContext('2d');
-cropCanvas.width=cropImg.width;
-cropCanvas.height=cropImg.height;
 document.getElementById('crop-container').style.display='block';
-cropRatio='1:1'; // Set default
-drawCrop();
+document.getElementById('crop-image').src=e.target.result;
+document.getElementById('original-preview').innerHTML=`<img src="${e.target.result}" class="preview-image" style="max-height:200px">`;
+initCropArea();
 };
 cropImg.src=e.target.result;
 };
@@ -357,65 +382,177 @@ function setCropRatio(ratio){
 document.querySelectorAll('#crop .preset-btn').forEach(b=>b.classList.remove('active'));
 event.target.classList.add('active');
 cropRatio=ratio;
-drawCrop();
+initCropArea();
 }
 
-function drawCrop(){
-if(!cropImg||!cropCanvas)return;
-cropCtx.clearRect(0,0,cropCanvas.width,cropCanvas.height);
-cropCtx.drawImage(cropImg,0,0);
-if(cropRatio!=='free'){
+function initCropArea(){
+const img=document.getElementById('crop-image');
+const container=img.parentElement;
+const area=document.getElementById('crop-area');
+
+// Calculate initial crop area
+let width,height;
+const imgWidth=img.offsetWidth;
+const imgHeight=img.offsetHeight;
+
+if(cropRatio==='free'){
+width=imgWidth*0.7;
+height=imgHeight*0.7;
+}else{
 const [w,h]=cropRatio.split(':').map(Number);
 const ratio=w/h;
-let cropW,cropH;
-if(cropCanvas.width/cropCanvas.height>ratio){
-cropH=cropCanvas.height;cropW=cropH*ratio;
+if(imgWidth/imgHeight>ratio){
+height=imgHeight*0.8;
+width=height*ratio;
 }else{
-cropW=cropCanvas.width;cropH=cropW/ratio;
-}
-const x=(cropCanvas.width-cropW)/2;
-const y=(cropCanvas.height-cropH)/2;
-cropCtx.strokeStyle='#667eea';
-cropCtx.lineWidth=3;
-cropCtx.setLineDash([10,5]);
-cropCtx.strokeRect(x,y,cropW,cropH);
+width=imgWidth*0.8;
+height=width/ratio;
 }
 }
 
-function resetCrop(){
-cropRatio='1:1';
-document.querySelectorAll('#crop .preset-btn').forEach((b,i)=>{
-b.classList.remove('active');
-if(i===0)b.classList.add('active');
+cropArea={
+x:(imgWidth-width)/2,
+y:(imgHeight-height)/2,
+width:width,
+height:height
+};
+
+updateCropArea();
+area.style.display='block';
+updateCroppedPreview();
+}
+
+function updateCropArea(){
+const area=document.getElementById('crop-area');
+area.style.left=cropArea.x+'px';
+area.style.top=cropArea.y+'px';
+area.style.width=cropArea.width+'px';
+area.style.height=cropArea.height+'px';
+}
+
+function updateCroppedPreview(){
+const img=document.getElementById('crop-image');
+const canvas=document.createElement('canvas');
+const ctx=canvas.getContext('2d');
+
+// Calculate scale factor between displayed image and original image
+const scaleX=img.naturalWidth/img.offsetWidth;
+const scaleY=img.naturalHeight/img.offsetHeight;
+
+canvas.width=cropArea.width*scaleX;
+canvas.height=cropArea.height*scaleY;
+
+ctx.drawImage(
+img,
+cropArea.x*scaleX,cropArea.y*scaleY,
+cropArea.width*scaleX,cropArea.height*scaleY,
+0,0,
+canvas.width,canvas.height
+);
+
+document.getElementById('cropped-preview').innerHTML=`<img src="${canvas.toDataURL()}" class="preview-image" style="max-height:200px">`;
+}
+
+// Mouse events for crop area
+document.getElementById('crop-area').addEventListener('mousedown',function(e){
+if(e.target.classList.contains('crop-handle')){
+isResizing=true;
+resizeHandle=e.target.classList[1]; // nw, ne, sw, se
+}else{
+isDragging=true;
+}
+startX=e.clientX;
+startY=e.clientY;
+e.preventDefault();
 });
-drawCrop();
+
+document.addEventListener('mousemove',function(e){
+if(!isDragging&&!isResizing)return;
+
+const dx=e.clientX-startX;
+const dy=e.clientY-startY;
+
+if(isDragging){
+cropArea.x=Math.max(0,Math.min(cropArea.x+dx,img.offsetWidth-cropArea.width));
+cropArea.y=Math.max(0,Math.min(cropArea.y+dy,img.offsetHeight-cropArea.height));
+}else if(isResizing){
+const minSize=20;
+switch(resizeHandle){
+case'nw':
+cropArea.x=Math.max(0,Math.min(cropArea.x+dx,cropArea.x+cropArea.width-minSize));
+cropArea.y=Math.max(0,Math.min(cropArea.y+dy,cropArea.y+cropArea.height-minSize));
+cropArea.width=Math.max(minSize,cropArea.width-dx);
+cropArea.height=Math.max(minSize,cropArea.height-dy);
+break;
+case'ne':
+cropArea.y=Math.max(0,Math.min(cropArea.y+dy,cropArea.y+cropArea.height-minSize));
+cropArea.width=Math.max(minSize,cropArea.width+dx);
+cropArea.height=Math.max(minSize,cropArea.height-dy);
+break;
+case'sw':
+cropArea.x=Math.max(0,Math.min(cropArea.x+dx,cropArea.x+cropArea.width-minSize));
+cropArea.width=Math.max(minSize,cropArea.width-dx);
+cropArea.height=Math.max(minSize,cropArea.height+dy);
+break;
+case'se':
+cropArea.width=Math.max(minSize,cropArea.width+dx);
+cropArea.height=Math.max(minSize,cropArea.height+dy);
+break;
+}
+
+// Maintain aspect ratio if not free
+if(cropRatio!=='free'){
+const [w,h]=cropRatio.split(':').map(Number);
+const targetRatio=w/h;
+const currentRatio=cropArea.width/cropArea.height;
+
+if(Math.abs(currentRatio-targetRatio)>0.01){
+if(resizeHandle==='se'||resizeHandle==='ne'||resizeHandle==='sw'){
+cropArea.height=cropArea.width/targetRatio;
+}else{
+cropArea.width=cropArea.height*targetRatio;
+}
+}
+}
+}
+
+updateCropArea();
+updateCroppedPreview();
+
+startX=e.clientX;
+startY=e.clientY;
+});
+
+document.addEventListener('mouseup',function(){
+isDragging=false;
+isResizing=false;
+resizeHandle=null;
+});
+
+function resetCrop(){
+initCropArea();
 }
 
 function downloadCrop(){
-if(!cropCanvas)return;
-const temp=document.createElement('canvas');
-const tempCtx=temp.getContext('2d');
-if(cropRatio==='free'){
-temp.width=cropCanvas.width;
-temp.height=cropCanvas.height;
-tempCtx.drawImage(cropCanvas,0,0);
-}else{
-const [w,h]=cropRatio.split(':').map(Number);
-const ratio=w/h;
-let cropW,cropH,x,y;
-if(cropCanvas.width/cropCanvas.height>ratio){
-cropH=cropCanvas.height;cropW=cropH*ratio;
-}else{
-cropW=cropCanvas.width;cropH=cropW/ratio;
-}
-x=(cropCanvas.width-cropW)/2;
-y=(cropCanvas.height-cropH)/2;
-temp.width=cropW;
-temp.height=cropH;
-tempCtx.drawImage(cropCanvas,x,y,cropW,cropH,0,0,cropW,cropH);
-}
-// Show before/after preview
-showBeforeAfter('crop',cropCanvas,temp);
+const img=document.getElementById('crop-image');
+const canvas=document.createElement('canvas');
+const ctx=canvas.getContext('2d');
+
+const scaleX=img.naturalWidth/img.offsetWidth;
+const scaleY=img.naturalHeight/img.offsetHeight;
+
+canvas.width=cropArea.width*scaleX;
+canvas.height=cropArea.height*scaleY;
+
+ctx.drawImage(
+img,
+cropArea.x*scaleX,cropArea.y*scaleY,
+cropArea.width*scaleX,cropArea.height*scaleY,
+0,0,
+canvas.width,canvas.height
+);
+
+downloadCanvas(canvas,'cropped');
 }
 
 // Rotate
@@ -481,7 +618,7 @@ drawRotate();
 
 function downloadRotate(){
 if(!rotateCanvas)return;
-showBeforeAfter('rotate',rotateImg,rotateCanvas);
+downloadCanvas(rotateCanvas,'rotated');
 }
 
 // Filter
@@ -532,65 +669,7 @@ drawFilter();
 
 function downloadFilter(){
 if(!filterCanvas)return;
-showBeforeAfter('filter',filterImg,filterCanvas);
-}
-
-// Before/After Preview Modal
-function showBeforeAfter(type,original,processed){
-const modal=document.createElement('div');
-modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;overflow-y:auto';
-modal.innerHTML=`
-<div style="background:white;border-radius:1rem;max-width:1200px;width:100%;max-height:90vh;overflow-y:auto;padding:2rem">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
-<h3 style="font-size:1.5rem;font-weight:bold;color:#333"><i class="fas fa-eye" style="color:#667eea"></i> Before & After Preview</h3>
-<button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:#ef4444;color:white;border:none;border-radius:50%;width:40px;height:40px;cursor:pointer;font-size:20px">×</button>
-</div>
-<div class="comparison-container" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem">
-<div class="comparison-item" style="text-align:center;padding:1rem;background:#f8fafc;border-radius:0.5rem">
-<h4 style="font-weight:bold;margin-bottom:0.5rem;color:#667eea">📷 Original</h4>
-<canvas id="before-canvas" style="max-width:100%;height:auto;border-radius:0.5rem"></canvas>
-<p style="margin-top:0.5rem;color:#666;font-size:0.9rem" id="before-size"></p>
-</div>
-<div class="comparison-item" style="text-align:center;padding:1rem;background:#f8fafc;border-radius:0.5rem">
-<h4 style="font-weight:bold;margin-bottom:0.5rem;color:#10b981">✨ Processed</h4>
-<canvas id="after-canvas" style="max-width:100%;height:auto;border-radius:0.5rem"></canvas>
-<p style="margin-top:0.5rem;color:#666;font-size:0.9rem" id="after-size"></p>
-</div>
-</div>
-<div style="display:flex;gap:1rem;flex-wrap:wrap">
-<button onclick="downloadCanvasFromModal('after-canvas','${type}_image')" style="flex:1;min-width:200px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:1rem;border:none;border-radius:0.5rem;font-weight:bold;cursor:pointer;font-size:1rem">
-<i class="fas fa-download"></i> Download Processed Image
-</button>
-<button onclick="this.closest('div').parentElement.parentElement.remove()" style="flex:1;min-width:200px;background:#6b7280;color:white;padding:1rem;border:none;border-radius:0.5rem;font-weight:bold;cursor:pointer;font-size:1rem">
-<i class="fas fa-times"></i> Cancel
-</button>
-</div>
-</div>
-`;
-document.body.appendChild(modal);
-const beforeCanvas=document.getElementById('before-canvas');
-const afterCanvas=document.getElementById('after-canvas');
-const beforeCtx=beforeCanvas.getContext('2d');
-const afterCtx=afterCanvas.getContext('2d');
-if(original instanceof HTMLCanvasElement){
-beforeCanvas.width=original.width;
-beforeCanvas.height=original.height;
-beforeCtx.drawImage(original,0,0);
-}else{
-beforeCanvas.width=original.width;
-beforeCanvas.height=original.height;
-beforeCtx.drawImage(original,0,0);
-}
-afterCanvas.width=processed.width;
-afterCanvas.height=processed.height;
-afterCtx.drawImage(processed,0,0);
-document.getElementById('before-size').textContent=`${beforeCanvas.width} × ${beforeCanvas.height}px`;
-document.getElementById('after-size').textContent=`${afterCanvas.width} × ${afterCanvas.height}px`;
-}
-
-function downloadCanvasFromModal(canvasId,filename){
-const canvas=document.getElementById(canvasId);
-downloadCanvas(canvas,filename);
+downloadCanvas(filterCanvas,'filtered');
 }
 
 // PDF
