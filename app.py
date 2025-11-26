@@ -344,6 +344,7 @@ cropCtx=cropCanvas.getContext('2d');
 cropCanvas.width=cropImg.width;
 cropCanvas.height=cropImg.height;
 document.getElementById('crop-container').style.display='block';
+cropRatio='1:1'; // Set default
 drawCrop();
 };
 cropImg.src=e.target.result;
@@ -381,7 +382,14 @@ cropCtx.strokeRect(x,y,cropW,cropH);
 }
 }
 
-function resetCrop(){drawCrop();}
+function resetCrop(){
+cropRatio='1:1';
+document.querySelectorAll('#crop .preset-btn').forEach((b,i)=>{
+b.classList.remove('active');
+if(i===0)b.classList.add('active');
+});
+drawCrop();
+}
 
 function downloadCrop(){
 if(!cropCanvas)return;
@@ -406,7 +414,8 @@ temp.width=cropW;
 temp.height=cropH;
 tempCtx.drawImage(cropCanvas,x,y,cropW,cropH,0,0,cropW,cropH);
 }
-downloadCanvas(temp,'cropped');
+// Show before/after preview
+showBeforeAfter('crop',cropCanvas,temp);
 }
 
 // Rotate
@@ -472,7 +481,7 @@ drawRotate();
 
 function downloadRotate(){
 if(!rotateCanvas)return;
-downloadCanvas(rotateCanvas,'rotated');
+showBeforeAfter('rotate',rotateImg,rotateCanvas);
 }
 
 // Filter
@@ -523,7 +532,65 @@ drawFilter();
 
 function downloadFilter(){
 if(!filterCanvas)return;
-downloadCanvas(filterCanvas,'filtered');
+showBeforeAfter('filter',filterImg,filterCanvas);
+}
+
+// Before/After Preview Modal
+function showBeforeAfter(type,original,processed){
+const modal=document.createElement('div');
+modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;overflow-y:auto';
+modal.innerHTML=`
+<div style="background:white;border-radius:1rem;max-width:1200px;width:100%;max-height:90vh;overflow-y:auto;padding:2rem">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
+<h3 style="font-size:1.5rem;font-weight:bold;color:#333"><i class="fas fa-eye" style="color:#667eea"></i> Before & After Preview</h3>
+<button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:#ef4444;color:white;border:none;border-radius:50%;width:40px;height:40px;cursor:pointer;font-size:20px">×</button>
+</div>
+<div class="comparison-container" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem">
+<div class="comparison-item" style="text-align:center;padding:1rem;background:#f8fafc;border-radius:0.5rem">
+<h4 style="font-weight:bold;margin-bottom:0.5rem;color:#667eea">📷 Original</h4>
+<canvas id="before-canvas" style="max-width:100%;height:auto;border-radius:0.5rem"></canvas>
+<p style="margin-top:0.5rem;color:#666;font-size:0.9rem" id="before-size"></p>
+</div>
+<div class="comparison-item" style="text-align:center;padding:1rem;background:#f8fafc;border-radius:0.5rem">
+<h4 style="font-weight:bold;margin-bottom:0.5rem;color:#10b981">✨ Processed</h4>
+<canvas id="after-canvas" style="max-width:100%;height:auto;border-radius:0.5rem"></canvas>
+<p style="margin-top:0.5rem;color:#666;font-size:0.9rem" id="after-size"></p>
+</div>
+</div>
+<div style="display:flex;gap:1rem;flex-wrap:wrap">
+<button onclick="downloadCanvasFromModal('after-canvas','${type}_image')" style="flex:1;min-width:200px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:1rem;border:none;border-radius:0.5rem;font-weight:bold;cursor:pointer;font-size:1rem">
+<i class="fas fa-download"></i> Download Processed Image
+</button>
+<button onclick="this.closest('div').parentElement.parentElement.remove()" style="flex:1;min-width:200px;background:#6b7280;color:white;padding:1rem;border:none;border-radius:0.5rem;font-weight:bold;cursor:pointer;font-size:1rem">
+<i class="fas fa-times"></i> Cancel
+</button>
+</div>
+</div>
+`;
+document.body.appendChild(modal);
+const beforeCanvas=document.getElementById('before-canvas');
+const afterCanvas=document.getElementById('after-canvas');
+const beforeCtx=beforeCanvas.getContext('2d');
+const afterCtx=afterCanvas.getContext('2d');
+if(original instanceof HTMLCanvasElement){
+beforeCanvas.width=original.width;
+beforeCanvas.height=original.height;
+beforeCtx.drawImage(original,0,0);
+}else{
+beforeCanvas.width=original.width;
+beforeCanvas.height=original.height;
+beforeCtx.drawImage(original,0,0);
+}
+afterCanvas.width=processed.width;
+afterCanvas.height=processed.height;
+afterCtx.drawImage(processed,0,0);
+document.getElementById('before-size').textContent=`${beforeCanvas.width} × ${beforeCanvas.height}px`;
+document.getElementById('after-size').textContent=`${afterCanvas.width} × ${afterCanvas.height}px`;
+}
+
+function downloadCanvasFromModal(canvasId,filename){
+const canvas=document.getElementById(canvasId);
+downloadCanvas(canvas,filename);
 }
 
 // PDF
